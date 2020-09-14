@@ -1,0 +1,605 @@
+---
+title: "Wine Prices Report"
+author: "Corentin Lobet"
+date: "9/10/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+rm(list = ls())
+libs = c("tidyverse", "ggplot2", "imager", "broom", "caret", "dslabs", 
+         "matrixStats", "purrr", "rpart", "randomForest", "lubridate")
+lapply(libs, library, character.only = TRUE)
+options(digits = 4, warn = -1, scipen = 900)
+
+seed = function(x) set.seed(x, sample.kind = "Rounding")
+tb = function(x) knitr::kable(x, align = "c")
+
+wine_price = read_csv("data/raw.csv")
+```
+
+# Introduction : data and objectives
+
+In this research we use data of wine reviews that can be found [\textcolor{blue}{here on Kaggle}](https://www.kaggle.com/zynicide/wine-reviews). It
+consists of about 130,000 wine reviews with information about the wine and the reviewer.
+
+This dataset has largely been used to explain and predict the grade given to the wine (ranging from 80 to 100). Here we chose to model prices because they take values from a few dollars to several thousands dollars. We expect to get low precision using wine and reviewer specs though we wonder if the written reviews ('descrption') can help to explain unusually high prices. 
+
+```{r, include=TRUE}
+head(wine_price)
+names(wine_price)
+summary(wine_price[, c(5,6)]) %>% tb
+```
+
+
+# Methodology
+
+As we will see in the next section, this dataset needs some cleaning before we can fit models on it.
+
+We then pick regression ML models we'll be using to predict prices. Actually we do not provide the code we used to select models since it's simple training. The process took some days as we trained all regression models included in the caret package and we picked models based on 2 criteria : performance (RMSE) and computation time. We also verified that variables we were willing to fit were significant with a naive approach of feature selection i.e. training a linear model with different features and looking at the RMSE and the R-squared. 
+
+As a result we kept 3 main models : MARS, CIT and GBM. We also present results of 2 other models (linear regression and decision tree) as they are fast to run and it gives us the opportunity to compare them with MARS and CIT that are examples of their adaptive versions.
+
+Firstly, we fit prices against wine and taster specs only and analyze errors of the predictions. We then add word patterns as predictors in order to see if reviews add value using our models.
+
+# EDA and data cleaning
+
+## Basic Cleaning
+
+The table below shows the number of distinct values taken by each variable. Reviews are reported from 43 countries for up to 1,229 regions. Grades ('points') have only 21 levels (80-100) while prices have nearly 400 levels (we will assume it is a continuous variable). The table also shows that there are as few as 19 tasters (actually it is maybe more because the 19th value is NA).
+
+Some cleaning rules arise from these observations : remove 'designation' and 'winery' as there are too many levels and we think don't bring much information.Remove 'province' but keep 'country' and 'region_1' as we want to observe if there is a country effect and we don't want repetitive informations (indeed we assume there is a multicollinearity bias for province and country).
+
+```{r, include=TRUE}
+# levels = apply(wine_price, 2, function(x) { factor(x) %>% levels() %>% length() })
+# save(levels, file = "data/levels.RData")
+load("data/levels.RData"); levels %>% tb
+```
+
+Then wa take a look at NA values. We can remove rows for NA countries and varieties (less than 100 observations), for prices (it's our independent variable), for taster name (we assume it is an important variable and it's hard to deal with NAs for this one). 
+
+```{r, include=TRUE}
+apply(wine_price, 2, function(x) { sum(is.na(x)) }) %>% tb
+```
+
+
+It appears that region_1 has many NA values (>20,000). However we can see in the title variable that it often provides the region inside parentheses. We will then try to get it back from title (a variable that we won't use then by the way).
+
+```{r, include=TRUE}
+wine_price[1:20, c(8,12)] %>% tb
+```
+
+We are now ready for this first cleaning and variable picking step. The code below provides this data manipulation
+
+```{r, include=TRUE}
+# Select columns and remove NAs
+wine_price = wine_price %>%
+   select(country, description, points, price, 
+          region_1, taster_name, variety, title) %>%
+   filter(!is.na(price), !is.na(variety), !is.na(country), !is.na(taster_name)) %>%
+   rename(region = region_1)
+# Add regions from title
+wine_price = wine_price %>%
+   filter(!is.na(region) | str_detect(title, "\\(([:print:]+)\\)")) %>%
+   mutate(region = ifelse(is.na(region), str_extract(title, "\\(([:print:]+)\\)"), region)) %>%
+   mutate(region = str_remove_all(region, "\\(|\\)")) %>%
+   filter(str_count(region) < 25)
+wine_price = select(wine_price, -title)
+```
+
+## EDA and further data pre-processing
+
+We can notice that prices distribution seems to be skewed (because of outliers) while ratings' scores distribution looks Gaussian. This fact makes us expect that the score won't explain well the prices. That's why we look for other variables impact.
+
+```{r warning=FALSE, include=TRUE}
+# Ratings distribution
+hist(wine_price$points, main = "Grades distribution")
+# Price distribution
+ggplot(wine_price, aes(price)) +
+   geom_histogram(color = "black", fill = "red", alpha = 0.8) +
+   scale_x_log10() +
+   ggtitle("Prices distribution") +
+   theme(plot.title = element_text(hjust = 0.5))
+```
+
+This data reveals an incredible heterogeneity of the wine production accross countries. The number of wine reviews in a country can be less than 10 or more than 10,000 (e.g. France). As we would like to compute the country effect we choose to keep countries with more than 50 observations (23 remaining countries).
+
+```{r warning=FALSE, include=TRUE}
+# Keep >50 obs
+temp = wine_price %>%
+   group_by(country) %>%
+   summarise(n = n())
+countries = temp$country[which(temp$n >= 50)]
+wine_price = wine_price %>%
+   filter(country %in% countries)
+rm(temp, countries)
+# Distribution
+wine_price %>%
+   group_by(country) %>%
+   summarise(n = n()) %>%
+   mutate(country = reorder(country, n)) %>%
+   ggplot(aes(y = country, x = n)) +
+   geom_bar(stat = "identity", fill = "#f68060", alpha = 0.8, width = 0.6) +
+   scale_x_log10() +
+   xlab("# of observations - log scale") +
+   ylab("") + ggtitle("Observations by country") +
+   ggthemes::theme_clean()
+```
+
+We do the same by tasters which reduces to 17 tasters each having reviewed more than 100 wines and some of them having tasted thousands.
+
+```{r, include=TRUE}
+temp = wine_price %>%
+   group_by(taster_name) %>%
+   summarise(n = n())
+tasters = temp$taster_name[which(temp$n >= 50)]
+wine_price = wine_price %>%
+   filter(taster_name %in% tasters)
+rm(temp, tasters)
+wine_price %>%
+   group_by(taster_name) %>%
+   summarise(n = n()) %>%
+   mutate(taster_name = reorder(taster_name, n)) %>%
+   ggplot(aes(y = taster_name, x = n)) +
+   geom_bar(stat = "identity", fill = "#f68060", alpha = 0.8, width = 0.6) +
+   scale_x_log10() +
+   xlab("# of observations - log scale") +
+   ylab("") + ggtitle("Observations by taster") +
+   ggthemes::theme_clean()
+```
+
+Same process for varieties. 
+
+```{r, include=TRUE}
+temp = wine_price %>%
+   group_by(variety) %>%
+   summarise(n = n())
+varieties = temp$variety[which(temp$n >= 50)]
+wine_price = wine_price %>%
+   filter(variety %in% varieties)
+rm(temp, varieties)
+wine_price %>%
+   group_by(variety) %>%
+   summarise(n = n()) %>%
+   mutate(variety = reorder(variety, n)) %>%
+   ggplot(aes(y = variety, x = n)) +
+   geom_bar(stat = "identity", fill = "#f68060", alpha = 0.8, width = 0.6) +
+   scale_x_log10() +
+   ggthemes::theme_clean() +
+   xlab("# of observations - log scale") +
+   ylab("") + theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+   ggtitle("Observations by variety") 
+```
+
+It remains 104 wine varieties in the dataset. The table below shows the most frequent ones.
+
+```{r, include=TRUE}
+wine_price$variety %>% n_distinct()
+wine_price %>%
+   group_by(variety) %>%
+   summarise(n = n()) %>%
+   arrange(desc(n)) %>%
+   head() %>% tb
+```
+
+Finally we repeat the cleaning process for regions but this time with a threshold of 20. Most regions have less than 100 observations.
+
+
+```{r, include=TRUE}
+temp = wine_price %>%
+   group_by(region) %>%
+   summarise(n = n())
+regions = temp$region[which(temp$n >= 20)]
+wine_price = wine_price %>%
+   filter(region %in% regions)
+rm(temp)
+wine_price %>%
+   group_by(region) %>%
+   summarise(n = n()) %>%
+   mutate(region = reorder(region, n)) %>%
+   ggplot(aes(y = region, x = n)) +
+   geom_bar(stat = "identity", fill = "#f68060", alpha = 0.8, width = 0.6) +
+   scale_x_log10() +
+   ggthemes::theme_clean() +
+   xlab("# of observations - log scale") +
+   ylab("") + theme(axis.title.y=element_blank(),
+        axis.text.y=element_blank(),
+        axis.ticks.y=element_blank()) +
+   ggtitle("Observations by region") 
+
+```
+
+## Look at relationships
+
+Score effect : it seems that there is a log-lin relationship between price and score though the score doesn't explain outsiders i.e. luxury wines.
+
+```{r, include=TRUE}
+# wine_price %>%
+#    ggplot(aes(points, price)) +
+#    geom_point(alpha = 0.6) +
+#    geom_smooth() +
+#    ggthemes::theme_economist_white() +
+#    xlab("Score") + ylab("Price") +
+#    scale_y_log10()
+load("data/plot1.RData"); plot1
+```
+
+Country effect : the heterogeneity is striking. Some countries have tiny price range while others have many outliers. Actually these countries are well known for their wines (France, Italy, ...).
+
+```{r, include=TRUE}
+wine_price %>%
+   group_by(country) %>%
+   mutate(median = median(price)) %>%
+   ggplot(aes(reorder(country, desc(median)), price, fill = reorder(country, desc(median)))) +
+   geom_boxplot(show.legend = F, outlier.size = 1, outlier.alpha = 0.8) +
+   scale_y_log10() +
+   theme(axis.text.x = element_text(angle = 70, hjust = 1)) +
+   xlab("") + ylab("Price") +
+   ggtitle("Price distributions across countries")
+```
+
+Region effect : we will study the region effect in countries with the most regions recorded for wines : France and USA.
+
+```{r, include=TRUE}
+wine_price %>% 
+   group_by(country) %>%
+   summarise(regions = n_distinct(region)) %>%
+   arrange(desc(regions))
+```
+
+**USA**
+
+```{r, include=TRUE}
+temp = wine_price %>% 
+   filter(country == "US") %>%
+   group_by(region) %>%
+   mutate(median = median(price),
+          max = max(price),
+          min = min(price))
+summary(temp[, 8:10])
+```
+
+These 3 density plots below show the distributions of the min, median and max prices across USA regions. Median price ranges between 14 and 90 which is very large. Some regions produce expansive wines. Min price ranges from 4 to 40. Max price rockets to 2,013 while some regions have max price lower than 100 (minmax = 22).
+
+```{r, include=TRUE}
+temp %>% ggplot(aes(median)) +
+   geom_density(fill = "red", alpha = 0.2, bw = 0.05) +
+   geom_density(aes(max), fill = "blue", alpha = 0.2, bw = 0.05) +
+   scale_x_log10() +
+   geom_density(aes(min), fill = "green", alpha = 0.2, bw = 0.05) +
+   coord_flip() +
+   xlab("Min - Median - Max Price") +
+   ggtitle("Price distribution accross US regions")
+```
+
+**France**
+
+```{r, include=TRUE}
+temp = wine_price %>% 
+   filter(country == "France") %>%
+   group_by(region) %>%
+   mutate(median = median(price),
+          max = max(price),
+          min = min(price))
+summary(temp[, 8:10])
+```
+```{r, include=TRUE}
+temp %>% ggplot(aes(median)) +
+   geom_density(fill = "red", alpha = 0.2, bw = 0.05) +
+   geom_density(aes(max), fill = "blue", alpha = 0.2, bw = 0.05) +
+   scale_x_log10() +
+   geom_density(aes(min), fill = "green", alpha = 0.2, bw = 0.05) +
+   coord_flip() +
+   xlab("Min - Median - Max Price") +
+   ggtitle("Price distribution accross France regions")
+rm(temp)
+```
+
+In France the median goes up to 231 and there are 3 regions showing a median price above 150.
+
+```{r, include=TRUE}
+temp %>% filter(median > 150) %>% .$region %>% unique()
+```
+
+Five regions have a minimum price above 50. And 4 regions have a maximum price below 25. Therefore, as it can be deduced from the previous plot, the price heterogeneity across regions can be significantly different between countries. That's a good argument for fitting ML models with both variables.
+
+```{r, include=TRUE}
+temp %>% filter(min > 50) %>% .$region %>% unique()
+temp %>% filter(max < 25) %>% .$region %>% unique()
+rm(temp)
+```
+
+Variety effect : We see less variability across varieties and we expect the effect to be minor.
+For visualization comfort purposes we randomly select 40 of the 104 varieties. 
+
+```{r, include=TRUE}
+seed(10)
+selection = sample(unique(wine_price$variety), 40)
+wine_price %>%
+   filter(variety %in% selection) %>%
+   group_by(variety) %>%
+   mutate(median = median(price)) %>%
+   ggplot(aes(reorder(variety, desc(median)), price, fill = reorder(variety, desc(median)))) +
+   geom_boxplot(show.legend = F, outlier.size = 1, outlier.alpha = 0.8) +
+   scale_y_log10() +
+   theme(axis.text.x = element_text(angle = 70, hjust = 1)) +
+   xlab("") + ylab("Price") +
+   ggtitle("Price distributions across varieties")
+```
+
+Taster effect : We do not observe strong variability in medians and interquartiles but it seems that some reviewers allow for higher prices, maybe due to their reputation. For example, Roger Voss, who made 20% of the reviews for the remaining data, is related to wines that have a low median price though many outliers. 
+
+```{r, include=TRUE}
+wine_price %>%
+   group_by(taster_name) %>%
+   mutate(max = max(price)) %>%
+   ggplot(aes(reorder(taster_name, desc(max)), price, fill = reorder(taster_name, desc(max)))) +
+   geom_boxplot(show.legend = F, outlier.size = 1, outlier.alpha = 0.8) +
+   scale_y_log10() +
+   theme(axis.text.x = element_text(angle = 70, hjust = 1)) +
+   xlab("") + ylab("Price") +
+   ggtitle("Price distributions depending on taster name")
+```
+
+# Fitting models on basic predictors
+
+At this point we have 5 predictors to fit prices : country, region, variety, score and taster. In this section we train the 5 selected models and show the results of predictions (RMSEs). For the same reason mentioned in the Methodology section, we do not provide the code for parameter tuning. 
+
+Code for partitionning data :
+
+```{r, include=TRUE}
+# Load and coerce to factors
+load(file = "data/wine_price_2.RData")
+wine_price = wine_price %>%
+   mutate(country = factor(country),
+          region = factor(region),
+          variety = factor(variety),
+          taster_name = factor(taster_name))
+# RMSE function
+RMSE = function(actual, predicted) sqrt(mean((actual - predicted)^2))
+# Split into training and validation sets
+seed(66)
+ind = createDataPartition(wine_price$price, p = 0.15, list = F)
+wp_train = wine_price[-ind,]; validation = wine_price[ind,]
+validation = validation %>% filter(region %in% wp_train$region)
+```
+
+## Models results :
+(We do not run the code again as it may take a lot of time)
+
+```{r, include=TRUE}
+# seed(66)
+# wp_train = wine_price[-ind,]; validation = wine_price[ind,]
+# validation = validation %>% filter(region %in% wp_train$region)
+# 
+# lm_fit = lm(log(price) ~ points + country + region + variety + taster_name,
+#             data = wp_train)
+# metrics = data.frame(Model = "lm",
+#                      RMSE = RMSE(predict(lm_fit, validation) %>% exp(), validation$price))
+# tree_fit = rpart(log(price) ~ points + country + region + variety + taster_name,
+#                  data = wp_train, cp = 0.001)
+# metrics = rbind(metrics, c("tree",
+#                            RMSE(predict(tree_fit, validation) %>% exp(), validation$price)))
+# ctree_fit = party::ctree(log(price) ~ points + country + region + variety + taster_name,
+#                          data = wp_train, controls = party::ctree_control(mincriterion = 0.01))
+# metrics = rbind(metrics, c("ctree",
+#                            RMSE(predict(ctree_fit, validation) %>% exp(), validation$price)))
+# earth_fit = earth::earth(log(price) ~ points + country + region + variety + taster_name,
+#                          data = wp_train)
+# metrics = rbind(metrics, c("earth",
+#                            RMSE(predict(earth_fit, validation) %>% exp(), validation$price)))
+# gbm_fit = gbm::gbm(log(price) ~ points + country + region + variety + taster_name,
+#                    data = wp_train, n.trees = 150,
+#                    shrinkage = 0.25, interaction.depth = 8, n.minobsinnode = 5)
+# metrics = rbind(metrics, c("gbm",
+#                            RMSE(predict(gbm_fit, validation) %>% exp(), validation$price)))
+# metrics[,2] = metrics[,2] %>% as.numeric()
+load("data/metrics.RData")
+metrics %>% knitr::kable(align = "c")
+```
+
+With 'lm' the linear regression, 'tree' the standard regression tree, 'ctree' the conditional inference tree, 'earth' the MARS model and 'gbm' the GBM. More details about these models are given in the Methodology section.
+
+We see that linear regression and the two tree methods have similar performance. What's striking though is that the MARS model, which is more adaptive than the linear regression, performs worse than it. The GBM is the best performing model here (>10% better based on RMSE).
+
+Now let's build ensemble models : the first predicts prices by computing the average predicted prices of the 5 models. The second ensemble performs a weigted average of the 5 models predictions in order to give more weight to better performing models.
+
+What we can observe in the table below is that the ensembles greatly increase performance compared to 4 models but they don't do better than the GBM. However giving even more weight to the GBM will make converge the RMSE. We conclude that the GBM is the best model we have fitted.
+
+```{r, include=TRUE}
+# predictions set
+load("data/lm.RData"); load("data/tree.RData"); load("data/ctree.RData")
+load("data/earth.RData"); load("data/gbm.RData")
+predictions = data.frame(lm, tree, ctree, earth, gbm)
+# ensemble 1
+ens_arit = predictions %>% as.matrix() %>%
+   rowMeans()
+# ensemble 2 
+weights = 1/metrics$RMSE^10
+ens_weighted = apply(predictions %>% as.matrix, 1, function(x){
+   (x %*% weights %>% t()) / sum(weights)
+})
+# display results
+metrics = rbind(metrics,
+                c("Naive Ens", RMSE(ens_arit, validation$price)),
+                c("Weighted Ens", RMSE(ens_weighted, validation$price)))
+metrics[,2] = metrics[,2] %>% as.numeric()
+metrics %>% knitr::kable(align = "c")
+```
+
+## Errors analysis
+
+The chart below shows prediction errors we obtained with the weighted ensemble model. The red line is the average error. The errors scale is log-2 transformed. What we see is that the average error is pulled up by very large errors i.e. unusually high wine prices. Our model is not capable of predicting large prices. 
+
+```{r, include=TRUE}
+errors = sqrt((ens_weighted - validation$price)^2)
+data.frame(errors) %>%
+   ggplot(aes(1:length(errors), errors)) + 
+   geom_point(alpha = 0.5, size = 0.1) +
+   xlab("") + scale_y_continuous(trans = "sqrt") +
+   geom_hline(yintercept = mean(errors), color = "red", lwd = 1.5) +
+   ggthemes::theme_clean()
+```
+
+Indeed errors range from nearly 0 to more than 850.
+
+```{r fig.height=5, fig.width=3, include=TRUE}
+errors %>% range() 
+errors %>% data.frame() %>%
+   ggplot(aes(y = errors)) +
+   geom_boxplot() +
+   scale_y_continuous(trans = "log2")
+```
+
+As we said, the mean is propulsed by outliers : only 25.87% of errors are above their mean (11.5), 2.7% are above 50 and less than 1% are above 100.
+
+```{r, include=TRUE}
+mean(errors > 11.5)
+mean(errors > 50)
+mean(errors > 100)
+```
+
+The plot below shows errors taht are above 100$.Some go above 400.  
+
+```{r, include=TRUE}
+errors[errors > 100] %>% plot(main = "Outliers' errors")
+```
+
+# Implementing descriptions as a predictor
+
+## Exctracting words from reviews
+
+Now we want to add written reviews to the set of predictors so that we can see if (at least using our models) it can improve the predicting performance. Reviews are stored in the variable 'description' :
+
+```{r, include=TRUE}
+load(file = "data/wine_price_2.RData")
+descriptions = wine_price$description
+
+head(descriptions)
+```
+
+Because we want our predictors to be word patterns, the first thing we need to do is to split descriptions in words. The following code is designed to achieve that. There is a total of 3,449,502 words (i.e. approximately 41 per description) and 61,159 unique words.
+
+```{r, include=TRUE}
+# Remove some symbols
+descriptions = descriptions %>%
+   str_remove_all("[\\.|\\,|\\;|\\:|\\(|\\)|\\?|\\!|\\-|\\'|\"]")
+
+words = descriptions %>% str_split(" ") %>% unlist()
+
+length(words); unique(words) %>% length()
+```
+
+We want to remove stop words from it since we assume they have no impact on prices. Only 600 unique words have been removed but it represents a total of 1,341,657 words.
+
+```{r, include=TRUE}
+data("stop_words", package = "tidytext")
+words = words[!(words %in% stop_words$word)]
+
+length(words); unique(words) %>% length()
+```
+
+Now we analyze the frequency of each remaining word in the data. Actually we get 48 problems of words not detected in the description variable. Because this number of issues is very low we decide to remove them from words.
+
+```{r, include=TRUE}
+# wine_price = wine_price %>%
+#    mutate(description = description %>%
+#              str_remove_all("[\\.|\\,|\\;|\\:|\\(|\\)|\\?|\\!|\\-|\\'|\"]"))
+
+# freq = sapply(words, function(word){
+#    str_detect(wine_price$description, word) %>%
+#       sum()
+# }) 
+
+load("data/freq.RData")
+sum(freq == 0) 
+words = words[freq != 0]
+```
+
+## Analyze words impact
+
+Before we can analyze words impact on prices we need to remove words that are not in the training set since we won't train our model with the validation set. That's what the following code is designed for :
+
+```{r, include=TRUE}
+# index = logical(length(words))
+# for(i in 1:length(words)){
+#    print(i)
+#    sum = wp_train %>%
+#       mutate(word = ifelse(str_detect(description, words[i]), 1, 0)) %>%
+#       .$word %>% sum()
+#    index[i] = (sum != 0)
+# }
+# words = words[index]
+
+load("data/words.RData")
+```
+
+In order to quantify the impact of words we compute a linear regression of prices against every word. We therefore store the beta coefficient and its p-value in a matrix.
+
+```{r, include=TRUE}
+# mat = matrix(0, length(words), 2)
+# for(i in 1:length(words)) {
+#    lm = (wp_train %>%
+#             mutate(word = ifelse(str_detect(description, words[i]), 1, 0)) %>%
+#             lm(price ~ word, data = .) %>%
+#             summary())[[4]][2,]
+#    mat[i,] = c(lm[1], lm[4])
+# }
+
+# colnames(mat) = c("beta", "pvalue")
+# mat[,1] = round(mat[,1], 3); mat[,2] = round(mat[,2], 3)
+
+# head(mat)
+# save(mat, file = "data/words_reg.RData")
+
+load("data/words_reg.RData")
+head(mat)
+```
+
+We can see the top impactful words i.e. those with the highest absolute beta. We filter with a p-value below 5%. 
+
+```{r, include=TRUE}
+mat %>% as.data.frame() %>%
+   mutate(word = words) %>%
+   filter(pvalue < 0.05) %>%
+   mutate(type = ifelse(beta >= 0, "+", "-")) %>%
+   mutate(beta = abs(beta)) %>%
+   arrange(desc(beta)) %>%
+   .$word %>% .[1:10]
+```
+# Fitting models with word patterns
+
+
+```{r, include=TRUE}
+
+```
+
+
+
+```{r, include=TRUE}
+
+```
+
+
+
+```{r, include=TRUE}
+
+```
+
+
+
+
+
+
+# Fitting models with word patterns
+
+
+
+# Conclusion
+

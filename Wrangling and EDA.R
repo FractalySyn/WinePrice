@@ -8,7 +8,7 @@ seed = function(x) set.seed(x, sample.kind = "Rounding")
 
 
 # Load data 
-wine_price = read_csv("data/raw.csv")
+wine_price = read_csv("data/raw.csv") 
 head(wine_price)
 names(wine_price)
 
@@ -16,7 +16,9 @@ names(wine_price)
 # Wrangle variables ------------
 
 "Number of levels ?"
-apply(wine_price, 2, function(x) { factor(x) %>% levels() %>% length() })
+# levels = apply(wine_price, 2, function(x) { factor(x) %>% levels() %>% length() })
+# save(levels, file = "data/levels.RData")
+load("data/levels.RData")
 # Remove designation and winery as there are too many levels and not much information
 # Remove province, keep country and region
 
@@ -31,7 +33,6 @@ wine_price = wine_price %>%
    select(country, description, points, price, 
           region_1, taster_name, variety, title) %>%
    filter(!is.na(price), !is.na(variety), !is.na(country), !is.na(taster_name)) %>%
-   # mutate(taster_name = ifelse(is.na(taster_name), "na", taster_name)) %>%
    rename(region = region_1)
 
 "Find regions"
@@ -62,11 +63,13 @@ load(file = "data/wine_price.RData")
 head(wine_price)
 
 # Ratings distribution
-hist(wine_price$points)
+hist(wine_price$points, main = "Grades distribution")
 # Price distribution
 ggplot(wine_price, aes(price)) +
-   geom_histogram(color = "black", fill = "red") +
-   scale_x_log10()
+   geom_histogram(color = "black", fill = "red", alpha = 0.8) +
+   scale_x_log10() +
+   ggtitle("Prices distribution") +
+   theme(plot.title = element_text(hjust = 0.5))
 
 # By country
 wine_price %>%
@@ -161,13 +164,16 @@ load(file = "data/wine_price_2.RData")
 head(wine_price)
 
 "Score effect"
-wine_price %>%
+plot1 = wine_price %>%
    ggplot(aes(points, price)) +
    geom_point(alpha = 0.6) +
    geom_smooth() +
    ggthemes::theme_economist_white() +
    xlab("Score") + ylab("Price") +
-   scale_y_log10()
+   scale_y_log10() +
+   ggtitle("Relationship Price ~ Score")
+save(plot1, file = "data/plot1.RData")
+load("data/plot1.RData"); plot1
 # Seems that there is a log-lin relationship though the score doesn't explain outsiders i.e. luxury wines
 
 "Country effect"

@@ -89,8 +89,7 @@ tree$results
 
 "ML training : we selected 5 ML models on tests that we don't show here, criteria
 were RMSe and computation time. We'll build an ensemble
-We do not show parameter tuning as well for the same reason
-!!!!! comment all this section and tune parameters to show it in the report, don't run it"
+We do not show parameter tuning as well for the same reason"
 # # LM 0.4193
 # lm_train = train(log(price) ~ points + country + region + variety + taster_name, 
 #                  data = wp_train, method = "lm",
