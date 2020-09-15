@@ -22,7 +22,7 @@ tb = function(x) knitr::kable(x, align = "c")
 wine_price = read_csv("data/raw.csv")
 ```
 
-# Introduction : data and objectives
+# 1. Introduction : data and objectives
 
 In this research we use data of wine reviews that can be found [\textcolor{blue}{here on Kaggle}](https://www.kaggle.com/zynicide/wine-reviews). It
 consists of about 130,000 wine reviews with information about the wine and the reviewer.
@@ -36,19 +36,31 @@ summary(wine_price[, c(5,6)]) %>% tb
 ```
 
 
-# Methodology
+# 2. Methodology
 
 As we will see in the next section, this dataset needs some cleaning before we can fit models on it.
 
-We then pick regression ML models we'll be using to predict prices. Actually we do not provide the code we used to select models since it's simple training. The process took some days as we trained all regression models included in the caret package and we picked models based on 2 criteria : performance (RMSE) and computation time. We also verified that variables we were willing to fit were significant with a naive approach of feature selection i.e. training a linear model with different features and looking at the RMSE and the R-squared. 
+We then pick regression ML models we'll be using to predict prices. Actually we do not provide the code we used to select models since it's simple training. The process took some days as we trained several regression models included in the caret package and we picked models based on 2 criteria : performance (RMSE) and computation time. We also verified that variables we were willing to fit were significant with a naive approach of feature selection i.e. training a linear model with different features and looking at the RMSE and the R-squared. 
 
 As a result we kept 3 main models : MARS, CIT and GBM. We also present results of 2 other models (linear regression and decision tree) as they are fast to run and it gives us the opportunity to compare them with MARS and CIT that are examples of their adaptive versions.
 
 Firstly, we fit prices against wine and taster specs only and analyze errors of the predictions. We then add word patterns as predictors in order to see if reviews add value using our models.
 
-# EDA and data cleaning
+## 2.1. MARS - Multivariate Adaptive Regression Splines
 
-## Basic Cleaning
+Introduced by Friedman in 1991, this model is a non-parametric regression technique that is an extension of linear regression. The difference with LR is that the data are fitted by multiple regression lines. The first step in building this model is to fit a regression line by OLS. Then we look for a cutoff among the predictors values such that the angle of the regression line changes at this cutoff. You can learn more bout this approach [\textcolor{blue}{here}](https://www.youtube.com/watch?v=CMZ4I09PL_I).
+
+## 2.2. CIT - Conditional Inference Tree
+
+The CIT is a version of decision trees is designed to correct the variable selection bias that occurs in the successive splits. It aims to avoid partitioning that are not statistically significant. You can learn more about it [\textcolor{blue}{here}](https://cran.r-project.org/web/packages/partykit/vignettes/ctree.pdf).
+
+## 2.3. GBM - Gradient Boosting Machine
+
+The GBM fits multiple trees and create an ensemble at each step for which the prediction is a weighted average of fitted trees. The weights are determined in function of the predictive performance of the trees. It is an alternative to random forests that often do worse and are longer to compute. You can learn more about it [\textcolor{blue}{here}](https://en.wikipedia.org/wiki/Gradient_boosting).
+
+# 3. EDA and data cleaning
+
+## 3.1. Basic Cleaning
 
 The table below shows the number of distinct values taken by each variable. Reviews are reported from 43 countries for up to 1,229 regions. Grades ('points') have only 21 levels (80-100) while prices have nearly 400 levels (we will assume it is a continuous variable). The table also shows that there are as few as 19 tasters (actually it is maybe more because the 19th value is NA).
 
@@ -91,11 +103,11 @@ wine_price = wine_price %>%
 wine_price = select(wine_price, -title)
 ```
 
-## EDA and further data pre-processing
+## 3.2. EDA and further data pre-processing
 
 We can notice that prices distribution seems to be skewed (because of outliers) while ratings' scores distribution looks Gaussian. This fact makes us expect that the score won't explain well the prices. That's why we look for other variables impact.
 
-```{r warning=FALSE, include=TRUE}
+```{r message=FALSE, warning=FALSE, include=TRUE}
 # Ratings distribution
 hist(wine_price$points, main = "Grades distribution")
 # Price distribution
@@ -108,7 +120,7 @@ ggplot(wine_price, aes(price)) +
 
 This data reveals an incredible heterogeneity of the wine production accross countries. The number of wine reviews in a country can be less than 10 or more than 10,000 (e.g. France). As we would like to compute the country effect we choose to keep countries with more than 50 observations (23 remaining countries).
 
-```{r warning=FALSE, include=TRUE}
+```{r message=FALSE, warning=FALSE, include=TRUE}
 # Keep >50 obs
 temp = wine_price %>%
    group_by(country) %>%
@@ -132,7 +144,7 @@ wine_price %>%
 
 We do the same by tasters which reduces to 17 tasters each having reviewed more than 100 wines and some of them having tasted thousands.
 
-```{r, include=TRUE}
+```{r message=FALSE, warning=FALSE, include=TRUE}
 temp = wine_price %>%
    group_by(taster_name) %>%
    summarise(n = n())
@@ -154,7 +166,7 @@ wine_price %>%
 
 Same process for varieties. 
 
-```{r, include=TRUE}
+```{r message=FALSE, warning=FALSE, include=TRUE}
 temp = wine_price %>%
    group_by(variety) %>%
    summarise(n = n())
@@ -179,7 +191,7 @@ wine_price %>%
 
 It remains 104 wine varieties in the dataset. The table below shows the most frequent ones.
 
-```{r, include=TRUE}
+```{r message=FALSE, warning=FALSE, include=TRUE}
 wine_price$variety %>% n_distinct()
 wine_price %>%
    group_by(variety) %>%
@@ -191,7 +203,7 @@ wine_price %>%
 Finally we repeat the cleaning process for regions but this time with a threshold of 20. Most regions have less than 100 observations.
 
 
-```{r, include=TRUE}
+```{r message=FALSE, warning=FALSE, include=TRUE}
 temp = wine_price %>%
    group_by(region) %>%
    summarise(n = n())
@@ -215,11 +227,11 @@ wine_price %>%
 
 ```
 
-## Look at relationships
+## 3.3. Look at relationships
 
 Score effect : it seems that there is a log-lin relationship between price and score though the score doesn't explain outsiders i.e. luxury wines.
 
-```{r, include=TRUE}
+```{r message=FALSE, warning=FALSE, include=TRUE}
 # wine_price %>%
 #    ggplot(aes(points, price)) +
 #    geom_point(alpha = 0.6) +
@@ -246,7 +258,7 @@ wine_price %>%
 
 Region effect : we will study the region effect in countries with the most regions recorded for wines : France and USA.
 
-```{r, include=TRUE}
+```{r message=FALSE, include=TRUE}
 wine_price %>% 
    group_by(country) %>%
    summarise(regions = n_distinct(region)) %>%
@@ -298,7 +310,6 @@ temp %>% ggplot(aes(median)) +
    coord_flip() +
    xlab("Min - Median - Max Price") +
    ggtitle("Price distribution accross France regions")
-rm(temp)
 ```
 
 In France the median goes up to 231 and there are 3 regions showing a median price above 150.
@@ -347,7 +358,7 @@ wine_price %>%
    ggtitle("Price distributions depending on taster name")
 ```
 
-# Fitting models on basic predictors
+# 4. Fitting models on basic predictors
 
 At this point we have 5 predictors to fit prices : country, region, variety, score and taster. In this section we train the 5 selected models and show the results of predictions (RMSEs). For the same reason mentioned in the Methodology section, we do not provide the code for parameter tuning. 
 
@@ -370,7 +381,8 @@ wp_train = wine_price[-ind,]; validation = wine_price[ind,]
 validation = validation %>% filter(region %in% wp_train$region)
 ```
 
-## Models results :
+## 4.1. Models results :
+
 (We do not run the code again as it may take a lot of time)
 
 ```{r, include=TRUE}
@@ -433,7 +445,7 @@ metrics[,2] = metrics[,2] %>% as.numeric()
 metrics %>% knitr::kable(align = "c")
 ```
 
-## Errors analysis
+## 4.2. Errors analysis
 
 The chart below shows prediction errors we obtained with the weighted ensemble model. The red line is the average error. The errors scale is log-2 transformed. What we see is that the average error is pulled up by very large errors i.e. unusually high wine prices. Our model is not capable of predicting large prices. 
 
@@ -471,9 +483,9 @@ The plot below shows errors taht are above 100$.Some go above 400.
 errors[errors > 100] %>% plot(main = "Outliers' errors")
 ```
 
-# Implementing descriptions as a predictor
+# 5. Implementing descriptions as a predictor
 
-## Exctracting words from reviews
+## 5.1. Exctracting words from reviews
 
 Now we want to add written reviews to the set of predictors so that we can see if (at least using our models) it can improve the predicting performance. Reviews are stored in the variable 'description' :
 
@@ -522,7 +534,7 @@ sum(freq == 0)
 words = words[freq != 0]
 ```
 
-## Analyze words impact
+## 5.2. Analyze words impact
 
 Before we can analyze words impact on prices we need to remove words that are not in the training set since we won't train our model with the validation set. That's what the following code is designed for :
 
@@ -573,33 +585,136 @@ mat %>% as.data.frame() %>%
    arrange(desc(beta)) %>%
    .$word %>% .[1:10]
 ```
-# Fitting models with word patterns
+# 5.3. Fitting models with word patterns
 
-
-```{r, include=TRUE}
-
-```
-
-
+Before training our models we need to create word predictors. Firstly we load the data we need :
 
 ```{r, include=TRUE}
+# Load datasets
+load("data/words_reg.RData")
+load("data/words.RData")
+seed(66)
+ind = createDataPartition(wine_price$price, p = 0.15, list = F)
+wp_train = wine_price[-ind,]; validation = wine_price[ind,]
+validation = validation %>% filter(region %in% wp_train$region)
 
+# Remove symbols in descriptions
+wp_train = wp_train %>%
+   mutate(description = description %>%
+             str_remove_all("[\\.|\\,|\\;|\\:|\\(|\\)|\\?|\\!|\\-|\\'|\"]"))
+validation = validation %>%
+   mutate(description = description %>%
+             str_remove_all("[\\.|\\,|\\;|\\:|\\(|\\)|\\?|\\!|\\-|\\'|\"]"))
 ```
 
-
+Then we pick 3000 words among all the words we have computed the effect. We choose to keep p-values above 5% and we want the words to appear at least 10 times in all the reviews for the training set.
 
 ```{r, include=TRUE}
+# keep pvalue < 5% 
+words_reg = mat %>% as.data.frame() %>%
+   mutate(word = words) %>%
+   filter(pvalue < 0.05) %>% 
+   mutate(type = ifelse(beta >= 0, "+", "-")) %>%
+   mutate(beta = abs(beta))
 
+# Compute their frequency
+# occurences = numeric(nrow(words_reg))
+# for(i in 1:nrow(words_reg)){
+#    occurences[i] = wp_train %>%
+#       mutate(word = ifelse(str_detect(description, words_reg$word[i]), 1, 0)) %>%
+#       .$word %>% sum()
+# }
+load("data/occurences1.RData")
+
+# Keep the first 3000 after sorting by impact
+words_reg = words_reg %>%
+   mutate(occurences) %>%
+   filter(occurences > 10,
+          !(word %in% colnames(wine_price))) %>%
+   arrange(desc(beta)) %>% 
+   .$word %>% .[1:3000]
 ```
 
+We do not want to have 3000 predictors though. That's why we create 100 clusters of 30 words. We keep the beta ordering for clusters making so that all clusters have different range of betas. Thus the first cluster of words contains the 30 first words in terms of beta. We then create 100 logical predictors for each word groups (TRUE if at least one of the 30 words of the group is in the description).
 
+```{r, include=TRUE}
+### Create words clusters
+# words_groups = split(words_reg, sapply(1:100, function(x){rep(x, 30)}))
+# patterns = c()
+# for(i in 1:length(words_groups)) {
+#    patterns[i] = paste0(words_groups[[i]], collapse = "|")
+# }
 
+### Create 100 logical predictors for word detection
+# for(i in 1:length(patterns)){
+#    wp_train = wp_train %>%
+#       mutate(ifelse(str_detect(description, patterns[i]), 1, 0) %>%
+#                 factor(levels = c(0,1)))
+#    validation = validation %>%
+#       mutate(ifelse(str_detect(description, patterns[i]), 1, 0) %>%
+#                 factor(levels = c(0,1)))
+#    colnames(wp_train)[i+7] = paste0("pattern", as.character(i))
+#    colnames(validation)[i+7] = paste0("pattern", as.character(i))
+# }
+# wp_train = wp_train[, -2]; validation = validation[, -2]
 
+load("data/validation.RData"); load("data/wp_train.RData")
+```
 
+Now we are ready to fit prices with all the variables. The results are shown in the table below :
 
-# Fitting models with word patterns
+```{r, include=TRUE}
+# lm_fit = lm(log(price) ~ ., data = wp_train)
+# metrics2 = data.frame(Model = "lm",
+#                      RMSE = RMSE(predict(lm_fit, validation) %>% exp(), validation$price))
+# tree_fit = rpart(log(price) ~ ., data = wp_train, cp = 0.001)
+# metrics2 = rbind(metrics2, c("tree",
+#                            RMSE(predict(tree_fit, validation) %>% exp(), validation$price)))
+# ctree_fit = party::ctree(log(price) ~ ., data = wp_train,
+#                          controls = party::ctree_control(mincriterion = 0.01))
+# metrics2 = rbind(metrics2, c("ctree",
+#                            RMSE(predict(ctree_fit, validation) %>% exp(), validation$price)))
+# earth_fit = earth::earth(log(price) ~ ., data = wp_train)
+# metrics2 = rbind(metrics2, c("earth",
+#                            RMSE(predict(earth_fit, validation) %>% exp(), validation$price)))
+# gbm_fit = gbm::gbm(log(price) ~ ., data = wp_train, n.trees = 150,
+#                    shrinkage = 0.25, interaction.depth = 8, n.minobsinnode = 5)
+# metrics2 = rbind(metrics2, c("gbm",
+#                            RMSE(predict(gbm_fit, validation) %>% exp(), validation$price)))
+# metrics2[,2] = metrics2[,2] %>% as.numeric()
+load("data/metrics3.RData")
+metrics2 %>% knitr::kable(align = "c")
+```
 
+Finally we build again ensemble models and we are ready to compare results with and without word predictors. Generally we observe a little improvement of our predictions as revealed in the last table. However the GBM was better without word predictors and as a result the weighted ensemble did not improve at all.
 
+```{r, include=TRUE}
+# load("data/lm2.RData"); load("data/tree2.RData"); load("data/ctree2.RData")
+# load("data/earth2.RData"); load("data/gbm2.RData")
+# predictions = data.frame(exp(lm), exp(tree), exp(ctree), exp(earth), exp(gbm))
+# 
+# # ensemble 1
+# ens_arit2 = predictions %>% as.matrix() %>%
+#    rowMeans()
+# 
+# # ensemble 2 
+# weights = 1/metrics2$RMSE^10
+# ens_weighted2 = apply(predictions %>% as.matrix, 1, function(x){
+#    (x %*% weights %>% t()) / sum(weights)
+# })
+# 
+# metrics2 = rbind(metrics2,
+#                 c("Naive Ens", RMSE(ens_arit2, validation$price)),
+#                 c("Weighted Ens", RMSE(ens_weighted2, validation$price)))
+# metrics2[,2] = metrics2[,2] %>% as.numeric() %>% round(4)
 
-# Conclusion
+load("data/metrics4.RData")
+data.frame(Model = metrics2$Model, No.words = metrics$RMSE,
+           With.words = metrics2$RMSE) %>% knitr::kable(align = "c")
+```
+
+# 6. Conclusion
+
+We can conclude that using our 5 models we are not able to make accurate forecasts of wine prices, especially for expensive wines. Furthermore analyzing written reviews doesn't add much value to the prediction process as it appears that words are not repeated in wine reviews of the same price. We think that it may exists better models to predict prices with these information but that the improvement wouldn't be much better. As a result we believe that there's a strong lack of information. Indeed, luxury wines that we call Grand Cru get their power to raise price for many reasons we don't have access to in this dataset (year, harvesting method, vine height, protected designation of origin, rarity, market demand, etc.).
+
 
